@@ -9,6 +9,7 @@ from geometry_msgs.msg import Quaternion, TransformStamped
 import tf_transformations
 from tf2_ros import TransformBroadcaster
 import math
+import numpy as np
 
 class ICM20948CLASS(Node):
     def __init__(self):
@@ -36,12 +37,53 @@ class ICM20948CLASS(Node):
         self.imu = ICM20948(self.i2c_addr)
         self.logger.info("Connected...")
 
+        # Calibration data
+        self.accel_bias = np.zeros(3)
+        self.gyro_bias = np.zeros(3)
+        self.mag_bias = np.zeros(3)
+        self.mag_scale = np.ones(3)
+
+        # Collect calibration data
+        self.collect_calibration_data()
+
         self.imu_pub_ = self.create_publisher(Imu, "/imu/data_raw", 10)
         self.mag_pub_ = self.create_publisher(MagneticField, "/imu/mag", 10)
         self.temp_pub_ = self.create_publisher(Temperature, "/imu/temp", 10)
-        # self.tf_broadcaster = TransformBroadcaster(self)
+        self.tf_broadcaster = TransformBroadcaster(self)
 
         self.pub_clk_ = self.create_timer(1 / self.pub_rate, self.publish_cback)
+
+    def collect_calibration_data(self):
+        self.logger.info("Collecting calibration data...")
+        accel_data = []
+        gyro_data = []
+        mag_data = []
+
+        for _ in range(500):
+            mag_x, mag_y, mag_z = self.imu.read_magnetometer_data()
+            acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z = self.imu.read_accelerometer_gyro_data()
+            
+            accel_data.append([acc_x, acc_y, acc_z])
+            gyro_data.append([gyro_x, gyro_y, gyro_z])
+            mag_data.append([mag_x, mag_y, mag_z])
+            time.sleep(0.01)
+
+        accel_data = np.array(accel_data)
+        gyro_data = np.array(gyro_data)
+        mag_data = np.array(mag_data)
+
+        # Compute biases
+        self.accel_bias = np.mean(accel_data, axis=0)
+        self.gyro_bias = np.mean(gyro_data, axis=0)
+        self.mag_bias = np.mean(mag_data, axis=0)
+
+        # Magnetometer scale calibration (simple example)
+        self.mag_scale = np.max(np.abs(mag_data - self.mag_bias), axis=0)
+
+        self.logger.info(f"Accel Bias: {self.accel_bias}")
+        self.logger.info(f"Gyro Bias: {self.gyro_bias}")
+        self.logger.info(f"Mag Bias: {self.mag_bias}")
+        self.logger.info(f"Mag Scale: {self.mag_scale}")
 
     def publish_cback(self):
         imu_msg = Imu()
@@ -53,31 +95,28 @@ class ICM20948CLASS(Node):
         acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z = self.imu.read_accelerometer_gyro_data()
         temp = self.imu.read_temperature()
 
+        # Apply calibration
+        acc_x -= self.accel_bias[0]
+        acc_y -= self.accel_bias[1]
+        acc_z -= self.accel_bias[2]
+        
+        gyro_x -= self.gyro_bias[0]
+        gyro_y -= self.gyro_bias[1]
+        gyro_z -= self.gyro_bias[2]
+
+        mag_x = (mag_x - self.mag_bias[0]) / self.mag_scale[0]
+        mag_y = (mag_y - self.mag_bias[1]) / self.mag_scale[1]
+        mag_z = (mag_z - self.mag_bias[2]) / self.mag_scale[2]
+
         # Fill IMU message
         imu_msg.header.stamp = self.get_clock().now().to_msg()
         imu_msg.header.frame_id = self.frame_id
-        imu_msg.linear_acceleration.x = acc_x*9.8
-        imu_msg.linear_acceleration.y = acc_y*9.8
-        imu_msg.linear_acceleration.z = acc_z*9.8
-        imu_msg.angular_velocity.x = gyro_x*0.0174
-        imu_msg.angular_velocity.y = gyro_y*0.0174
-        imu_msg.angular_velocity.z = gyro_z*0.0174
-
-        # Calculate orientation from accelerometer data
-        # roll = math.atan2(acc_y, acc_z)
-        # pitch = math.atan2(-acc_x, math.sqrt(acc_y ** 2 + acc_z ** 2))
-        # # Mx = mag_y * math.cos(roll) - mag_z * math.sin(roll)
-        # # My = mag_x * math.cos(pitch) + mag_y * math.sin(roll)*math.sin(pitch) + mag_z * math.cos(roll) * math.sin(pitch)
-        # # yaw = math.atan2(math.sqrt(acc_x*2 + acc_y*2), acc_z)
-        # yawX = mx_norm*cos(Pitch) + my_norm*sin(Pitch)*sin(Roll) + mz_norm*sin(Pitch)*cos(Roll) ;
-        # yawY = my_norm*cos(Roll) - mz_norm*sin(Roll) ;
-
-        # yaw = math.atan2(mag_x, -mag_y)
-        # # yaw = math.atan2(-My, Mx)
-        # self.logger.info(f"YAW: {yaw} : {mag_x, -mag_y}")
-        
-        # quaternion = tf_transformations.quaternion_from_euler(roll, pitch, yaw)
-        # imu_msg.orientation = Quaternion(x=quaternion[0], y=quaternion[1], z=quaternion[2], w=1.0)
+        imu_msg.linear_acceleration.x = acc_x * 9.8
+        imu_msg.linear_acceleration.y = acc_y * 9.8
+        imu_msg.linear_acceleration.z = acc_z * 9.8
+        imu_msg.angular_velocity.x = gyro_x * 0.0174
+        imu_msg.angular_velocity.y = gyro_y * 0.0174
+        imu_msg.angular_velocity.z = gyro_z * 0.0174
 
         # Fill MagneticField message
         mag_msg.header.stamp = self.get_clock().now().to_msg()
@@ -91,21 +130,10 @@ class ICM20948CLASS(Node):
         temp_msg.header.frame_id = self.frame_id
         temp_msg.temperature = temp
 
-        # Create and publish TF transform
-        # t = TransformStamped()
-        # t.header.stamp = self.get_clock().now().to_msg()
-        # t.header.frame_id = self.frame_id
-        # t.child_frame_id = self.child_frame_id
-        # t.transform.translation.x = 0.0
-        # t.transform.translation.y = 0.0
-        # t.transform.translation.z = 0.0
-        # t.transform.rotation = Quaternion(x=quaternion[0], y=quaternion[1], z=quaternion[2], w=quaternion[3])
-
-        # Publish messages and transform
+        # Publish messages
         self.imu_pub_.publish(imu_msg)
         self.mag_pub_.publish(mag_msg)
         self.temp_pub_.publish(temp_msg)
-        # self.tf_broadcaster.sendTransform(t)
 
 def main(args=None):
     rclpy.init(args=args)
