@@ -49,7 +49,7 @@ class ICM20948CLASS(Node):
         self.imu_pub_ = self.create_publisher(Imu, "/imu/data_raw", 10)
         self.mag_pub_ = self.create_publisher(MagneticField, "/imu/mag", 10)
         self.temp_pub_ = self.create_publisher(Temperature, "/imu/temp", 10)
-        self.tf_broadcaster = TransformBroadcaster(self)
+        # self.tf_broadcaster = TransformBroadcaster(self)
 
         self.pub_clk_ = self.create_timer(1 / self.pub_rate, self.publish_cback)
 
